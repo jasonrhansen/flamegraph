@@ -63,6 +63,21 @@ mod arch {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn collapse_options() -> CollapseOptions {
+    CollapseOptions::default()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn collapse_options() -> CollapseOptions {
+    CollapseOptions {
+        // We want the collapser to handle demangling since
+        // DTrace doesn't do a good job demangling Rust names.
+        demangle: true,
+        ..Default::default()
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
 mod arch {
     use super::*;
@@ -80,6 +95,10 @@ mod arch {
 
         let dtrace_script = "profile-997 /pid == $target/ \
                              { @[ustack(100)] = count(); }";
+
+        // DTrace doesn't do a good job demangling
+        // Rust names so do it in the collapser instead.
+        command.arg("-xmangled");
 
         command.arg("-x");
         command.arg("ustackframes=100");
@@ -125,8 +144,10 @@ fn terminated_by_error(status: ExitStatus) -> bool {
     status
         .signal() // the default needs to be true because that's the neutral element for `&&`
         .map_or(true, |code| {
-            code != signal_hook::SIGINT && code != signal_hook::SIGTERM
-        }) && !status.success()
+            code != signal_hook::SIGINT
+                && code != signal_hook::SIGTERM
+        })
+        && !status.success()
 }
 
 #[cfg(not(unix))]
@@ -147,7 +168,7 @@ pub fn generate_flamegraph_by_running_command<
     // SIGINT signal to all processes in the foreground
     // process group).
     let handler = unsafe {
-        signal_hook::register(signal_hook::SIGINT, || { })
+        signal_hook::register(signal_hook::SIGINT, || {})
             .expect("cannot register signal handler")
     };
 
@@ -178,9 +199,7 @@ pub fn generate_flamegraph_by_running_command<
 
     let collapsed_writer = BufWriter::new(&mut collapsed);
 
-    let collapse_options = CollapseOptions::default();
-
-    Folder::from(collapse_options)
+    Folder::from(collapse_options())
         .collapse(perf_reader, collapsed_writer)
         .expect(
             "unable to collapse generated profile data",
@@ -200,10 +219,11 @@ pub fn generate_flamegraph_by_running_command<
 
     let flamegraph_writer = BufWriter::new(flamegraph_file);
 
-    let flamegraph_options = FlamegraphOptions::default();
+    let mut flamegraph_options =
+        FlamegraphOptions::default();
 
     from_reader(
-        flamegraph_options,
+        &mut flamegraph_options,
         collapsed_reader,
         flamegraph_writer,
     )
